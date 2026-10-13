@@ -1,18 +1,12 @@
 import type { IBufferLine, IBufferRange } from '@xterm/xterm'
-import { extractTerminalFileLinkCandidates, resolveTerminalFileLink } from '@/lib/terminal-links'
-import { isRemoteRuntimeFileOperation } from '@/runtime/runtime-file-client'
+import { extractTerminalFileLinkCandidates } from '@/lib/terminal-links'
+import { openDetectedFilePath } from './terminal-file-open-routing'
 import {
-  getTerminalFileContext,
-  mapTerminalFilePath,
-  openDetectedFilePath,
-  terminalLinkWslDistro
-} from './terminal-file-open-routing'
+  fileLinkTargetExists,
+  resolveFileLinkTarget,
+  type FileLinkTarget
+} from './terminal-file-link-target'
 import { createTerminalPathExistenceBatch } from './terminal-path-existence-batch'
-import {
-  getTerminalPathExistsCacheKey,
-  writeTerminalPathExistsCache
-} from './terminal-path-exists-cache'
-import { resolveKnownWorktreeRootPathLink } from './terminal-worktree-path-link'
 import {
   buildHardWrappedPathLogicalLineCandidates,
   buildWrappedLogicalLine,
@@ -27,6 +21,7 @@ type FileLinkHitTestDeps = {
   worktreePath: string
   runtimeEnvironmentId?: string | null
   wslDistro?: string | null
+  terminalHandle?: string | null
   pathExistsCache?: Map<string, boolean>
   openWithSystemDefault?: boolean
 }
@@ -47,58 +42,31 @@ export function openFilePathLinkAtBufferPosition(
     return false
   }
 
-  const fileContext = getTerminalFileContext(
-    deps.worktreeId,
-    deps.worktreePath,
-    deps.runtimeEnvironmentId
-  )
-  const matches: {
-    absolutePath: string
-    line: number | null
-    column: number | null
+  const matches: (FileLinkTarget & {
     pathText: string
-    cacheKey: string
-    isRemoteRuntimePath: boolean
     cachedExists: boolean | undefined
-    isKnownWorktreeRoot: boolean
-  }[] = []
+  })[] = []
   for (const logicalLine of logicalLines) {
     for (const parsed of extractTerminalFileLinkCandidates(logicalLine.text)) {
-      const resolved = deps.startupCwd
-        ? resolveTerminalFileLink(parsed, deps.startupCwd, deps.terminalHomePath)
-        : null
-      if (!resolved) {
+      const target = resolveFileLinkTarget(parsed, {
+        cwd: deps.startupCwd,
+        homePath: deps.terminalHomePath,
+        worktreeId: deps.worktreeId,
+        worktreePath: deps.worktreePath,
+        runtimeEnvironmentId: deps.runtimeEnvironmentId,
+        wslDistro: deps.wslDistro
+      })
+      if (!target) {
         continue
       }
       const range = rangeForParsedFileLink(logicalLine, parsed.startIndex, parsed.endIndex)
       if (!range || !rangeContainsBufferPosition(range, position, terminalColumns)) {
         continue
       }
-      const mappedPath = mapTerminalFilePath(
-        resolved.absolutePath,
-        deps.worktreePath,
-        terminalLinkWslDistro(deps.wslDistro, deps.runtimeEnvironmentId)
-      )
-      const isRemoteRuntimePath = isRemoteRuntimeFileOperation(fileContext, mappedPath)
-      const cacheKey = getTerminalPathExistsCacheKey({
-        absolutePath: mappedPath,
-        connectionId: fileContext.connectionId,
-        isRemoteRuntimePath,
-        runtimeEnvironmentId: deps.runtimeEnvironmentId
-      })
-      const isKnownWorktreeRoot = Boolean(resolveKnownWorktreeRootPathLink(mappedPath))
-      if (/[\\/]$/.test(parsed.pathText) && !isKnownWorktreeRoot) {
-        continue
-      }
       matches.push({
-        absolutePath: mappedPath,
-        line: resolved.line,
-        column: resolved.column,
+        ...target,
         pathText: parsed.pathText,
-        cacheKey,
-        isRemoteRuntimePath,
-        cachedExists: deps.pathExistsCache?.get(cacheKey),
-        isKnownWorktreeRoot
+        cachedExists: deps.pathExistsCache?.get(target.cacheKey)
       })
     }
   }
@@ -138,19 +106,18 @@ export function openFilePathLinkAtBufferPosition(
   // path glued to the next row; opening the first unprobed guess fails silently
   // when the hover probe has not answered yet, so probe them all first.
   const pathExists = createTerminalPathExistenceBatch()
+  const pathExistsCache = deps.pathExistsCache ?? new Map<string, boolean>()
   // Why: allSettled so one candidate's probe error (permission, transport) does
   // not discard a sibling that resolved; a lost host connection rejects every
   // probe and the click opens nothing rather than a guessed path.
   void Promise.allSettled(
     uncached.map(async (candidate) => {
-      const exists = await pathExists(
-        fileContext,
-        candidate.absolutePath,
-        candidate.isRemoteRuntimePath
+      const exists = await fileLinkTargetExists(
+        candidate,
+        pathExistsCache,
+        pathExists,
+        deps.terminalHandle
       )
-      if (deps.pathExistsCache) {
-        writeTerminalPathExistsCache(deps.pathExistsCache, candidate.cacheKey, exists)
-      }
       return exists ? candidate : null
     })
   ).then((settled) => {

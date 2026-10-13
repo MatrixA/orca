@@ -108,10 +108,15 @@ function boundMessage(
   if (blocks.length < message.blocks.length) {
     markClipped(state, 'Some transcript blocks were omitted from oversized messages.')
   }
+  // The journal position only orders a live list; a worker read is already in order.
+  const { journalPosition: _journalPosition, ...served } = message
   return {
-    ...message,
+    ...served,
     id: boundIdentifier(message.id, transcriptPath, state),
     ...(message.turnId ? { turnId: boundIdentifier(message.turnId, transcriptPath, state) } : {}),
+    ...(message.parentId
+      ? { parentId: boundIdentifier(message.parentId, transcriptPath, state) }
+      : {}),
     blocks: blocks.map((block) => boundBlock(block, state))
   }
 }
@@ -134,7 +139,11 @@ function boundBlock(block: NativeChatBlock, state: TranscriptBoundState): Native
       input: boundToolInput(block.input, budget, 0, state)
     }
   }
-  if (block.type === 'subagent-group' || block.type === 'background-task') {
+  if (
+    block.type === 'subagent-group' ||
+    block.type === 'subagent' ||
+    block.type === 'background-task'
+  ) {
     return boundWorkerTranscriptActivityBlock(block, {
       clipMetadata: (value) => clipMetadata(value, state),
       clipText: (value) => clipText(value, state),

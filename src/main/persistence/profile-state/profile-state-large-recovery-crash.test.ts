@@ -14,7 +14,7 @@ import {
 import { restoreProfileStateDatabaseBackup } from './profile-state-database-recovery'
 import { writeProfileStateDatabaseSnapshotAsync } from './profile-state-database-snapshot'
 import { importProfileStateJson, readProfileStateSnapshot } from './profile-state-documents'
-import { profileStateJsonExportPath } from './profile-state-export-path'
+import { profileStateJsonExportPath } from './legacy-json/profile-state-export-path'
 import { buildRecoveryCrashProcess, killRecoveryAt } from './profile-state-recovery-crash-process'
 
 const suite = mkdtempSync(join(tmpdir(), 'orca-large-recovery-crash-'))
@@ -24,7 +24,7 @@ const oldJson = JSON.stringify({ opaque: 'x'.repeat(8 * 1024 * 1024), revision: 
 const selectedJson = JSON.stringify({ opaque: 'y'.repeat(8 * 1024 * 1024), revision: 'selected' })
 let bundle: string
 beforeAll(() => {
-  bundle = buildRecoveryCrashProcess(suite)
+  bundle = buildRecoveryCrashProcess(suite).bundle
 })
 afterEach(() => {
   for (const root of roots.splice(0)) {
